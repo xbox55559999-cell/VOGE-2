@@ -1,0 +1,5 @@
+{
+  "name": "MotoAnalytics Pro",
+  "description": "Сервис глубокой аналитики продаж мототехники с dashboard-панелью, сравнением периодов и детализацией по дилерам.",
+  "requestFramePermissions": []
+}
