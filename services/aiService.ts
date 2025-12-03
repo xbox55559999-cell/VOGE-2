@@ -1,8 +1,9 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { SaleRecord } from "../types";
+import { loadFromDB } from "./storage";
 
-const SYSTEM_PROMPT = `
+export const DEFAULT_SYSTEM_PROMPT = `
 Алгоритм работы
 Всегда действуй по этому чек‑листу:
 
@@ -105,6 +106,10 @@ export const getBusinessRecommendations = async (
     throw new Error("API Key is missing.");
   }
 
+  // Load custom prompt from DB or use default
+  const customPrompt = await loadFromDB('AI_SYSTEM_PROMPT');
+  const systemInstruction = customPrompt || DEFAULT_SYSTEM_PROMPT;
+
   const ai = new GoogleGenAI({ apiKey });
 
   // Map function to reduce token usage
@@ -151,7 +156,7 @@ export const getBusinessRecommendations = async (
         }
       ],
       config: {
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction: systemInstruction,
         temperature: 0.2, 
       }
     });

@@ -4,6 +4,9 @@ import { MOCK_DATA } from './constants';
 import { RawData, SaleRecord, User } from './types';
 import { processData, formatCurrency, formatNumber, convertCSVToRawData } from './services/dataProcessor';
 import { saveToDB, loadFromDB } from './services/storage';
+import { syncPikData } from './services/pikIntegration';
+import { sendTelegramMessage, getTelegramUpdates } from './services/telegramIntegration';
+import { messengerService } from './services/messengerService'; // Import Messenger Service
 import { authService } from './services/auth';
 import { Login } from './components/Login';
 import { UserManagement } from './components/UserManagement';
@@ -19,6 +22,9 @@ import { ComparisonView } from './components/ComparisonView';
 import { InventoryView, InventoryViewMode } from './components/InventoryView';
 import { RecommendationsView } from './components/RecommendationsView';
 import { InventoryMap } from './components/InventoryMap';
+import { PromptSettings } from './components/PromptSettings';
+import { IntegrationsHub } from './components/IntegrationsHub';
+import { MessengerHub } from './components/MessengerHub'; // Import Messenger Component
 import { FilterDropdown } from './components/FilterDropdown';
 // Charting
 import { 
@@ -28,7 +34,8 @@ import {
 // Icons - Explicitly avoid Map to prevent shadowing
 import { 
   RussianRuble, ShoppingCart, TrendingUp, Wallet, 
-  Calendar, Filter, Download, Search, Package, ChevronRight, ChevronDown, Check, Tag, Upload, Award, Box, Loader2, ArrowUpDown, X, ListFilter, MapPin as MapPinIcon
+  Calendar, Filter, Download, Search, Package, ChevronRight, ChevronDown, Check, Tag, Upload, Award, Box, Loader2, ArrowUpDown, X, ListFilter, MapPin as MapPinIcon,
+  BarChart2, LineChart as LineChartIcon
 } from 'lucide-react';
 
 const STORAGE_KEY = 'moto_analytics_data';
@@ -62,10 +69,12 @@ function App() {
   const [inventoryRawData, setInventoryRawData] = useState<RawData>({ total: { count_sold: 0, total_sold_price: 0, total_buy_price: 0 }, items: {} });
 
   // Persistent States for Sales and Inventory Views
-  // Explicitly cast the initial value to the imported type to avoid issues if type import is elided
   const [salesSubTab, setSalesSubTab] = useState<SalesSubTab>('overview');
   const [salesCrmSearch, setSalesCrmSearch] = useState('');
   const [inventoryViewMode, setInventoryViewMode] = useState<InventoryViewMode>('dealers');
+
+  // Messenger State
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
 
   // Check Auth on Mount
   useEffect(() => {
@@ -84,39 +93,127 @@ function App() {
       setCurrentUser(null);
   };
 
+  const loadData = async () => {
+      setIsDataLoading(true);
+      try {
+          // Load Sales Data
+          const savedSales = await loadFromDB(STORAGE_KEY);
+          if (savedSales) {
+              setRawData(savedSales);
+              console.log('Loaded sales data from DB');
+          } else {
+              console.log('No sales data in DB, using mock');
+              setRawData(MOCK_DATA);
+          }
+
+          // Load Inventory Data
+          const savedInventory = await loadFromDB(STORAGE_KEY_INVENTORY);
+          if (savedInventory) {
+              setInventoryRawData(savedInventory);
+              console.log('Loaded inventory data from DB');
+          }
+      } catch (e) {
+          console.error('Error loading data:', e);
+      } finally {
+          setIsDataLoading(false);
+      }
+  };
+
   // Load Data from IndexedDB on Mount
   useEffect(() => {
     // Only load data if authenticated
     if (!currentUser) return;
+    loadData();
+  }, [currentUser]); 
 
-    const initData = async () => {
-        setIsDataLoading(true);
-        try {
-            // Load Sales Data
-            const savedSales = await loadFromDB(STORAGE_KEY);
-            if (savedSales) {
-                setRawData(savedSales);
-                console.log('Loaded sales data from DB');
-            } else {
-                console.log('No sales data in DB, using mock');
-                setRawData(MOCK_DATA);
-            }
+  // Background Auto-Sync Logic (Cron-like for Frontend) & Messenger Polling
+  useEffect(() => {
+      if (!currentUser) return;
 
-            // Load Inventory Data
-            const savedInventory = await loadFromDB(STORAGE_KEY_INVENTORY);
-            if (savedInventory) {
-                setInventoryRawData(savedInventory);
-                console.log('Loaded inventory data from DB');
-            }
-        } catch (e) {
-            console.error('Error loading data:', e);
-        } finally {
-            setIsDataLoading(false);
-        }
-    };
+      const updateUnreadCount = async () => {
+          const count = await messengerService.getTotalUnread();
+          setUnreadMessagesCount(count);
+      };
+      
+      // Initial count
+      updateUnreadCount();
 
-    initData();
-  }, [currentUser]); // Depend on currentUser to reload if re-logging
+      // Poll Messenger Logic
+      const messengerInterval = setInterval(async () => {
+          const tgSettings = await loadFromDB('TELEGRAM_SETTINGS');
+          
+          if (tgSettings?.isConnected && tgSettings?.botToken) {
+              // REAL POLLING
+              const offset = messengerService.getLastUpdateId() + 1;
+              try {
+                  const updates = await getTelegramUpdates(tgSettings.botToken, offset);
+                  if (updates.length > 0) {
+                      await messengerService.processTelegramUpdates(updates);
+                      updateUnreadCount();
+                  }
+              } catch (e) {
+                  console.error("Polling error", e);
+              }
+          } else {
+              // Simulation fallback if not connected
+              if (Math.random() > 0.8) { // Slower simulation frequency
+                  await messengerService.simulateIncomingMessage();
+                  updateUnreadCount();
+              }
+          }
+      }, 5000); // Check every 5 sec
+
+      const checkAndRunSync = async () => {
+          const pikConfig = await loadFromDB('PIK_API_SETTINGS');
+          if (pikConfig && pikConfig.isConnected && pikConfig.autoSync && pikConfig.apiKey) {
+              const lastSync = pikConfig.lastSync || 0;
+              const now = Date.now();
+              const oneHour = 60 * 60 * 1000;
+
+              // If more than 1 hour passed
+              if (now - lastSync > oneHour) {
+                  console.log('Triggering Auto-Sync for PIK API...');
+                  try {
+                      const result = await syncPikData({ apiKey: pikConfig.apiKey });
+                      
+                      // Update Last Sync
+                      const updatedConfig = { ...pikConfig, lastSync: now };
+                      await saveToDB('PIK_API_SETTINGS', updatedConfig);
+                      
+                      if (result.added > 0) {
+                          console.log(`Auto-sync added ${result.added} records. Reloading...`);
+                          // Reload data to reflect changes in UI
+                          loadData(); 
+
+                          // Telegram Notification
+                          const telegramConfig = await loadFromDB('TELEGRAM_SETTINGS');
+                          if (telegramConfig?.isConnected && telegramConfig?.autoNotify && telegramConfig?.defaultChatId) {
+                              await sendTelegramMessage(
+                                  telegramConfig.botToken,
+                                  telegramConfig.defaultChatId,
+                                  `📊 <b>Обновление данных MotoData</b>\n\n✅ Успешная синхронизация с PIK-TD.\n📥 Загружено новых продаж: <b>${result.added}</b>\n🕒 Время: ${new Date().toLocaleTimeString('ru-RU')}`
+                              );
+                          }
+                      }
+                  } catch (e) {
+                      console.error('Auto-sync failed:', e);
+                  }
+              }
+          }
+      };
+
+      // Check immediately on mount/login
+      checkAndRunSync();
+
+      // Check every 5 minutes if it's time to sync
+      const intervalId = setInterval(checkAndRunSync, 5 * 60 * 1000);
+
+      return () => {
+          clearInterval(intervalId);
+          clearInterval(messengerInterval);
+      };
+  }, [currentUser]);
+
 
   // View State
   const [currentView, setCurrentView] = useState<'dashboard' | 'dealer'>('dashboard');
@@ -129,6 +226,7 @@ function App() {
 
   // Dashboard Chart State
   const [dashboardChartMode, setDashboardChartMode] = useState<'revenue' | 'units'>('revenue');
+  const [dashboardChartType, setDashboardChartType] = useState<'area' | 'bar'>('area');
 
   // Dashboard Table Sorting & Search State
   const [dashboardSortField, setDashboardSortField] = useState<'name' | 'value'>('value');
@@ -517,8 +615,11 @@ function App() {
       case 'inventory-map': return 'Остатки на карте';
       case 'analytics': return 'Аналитика';
       case 'comparison': return 'Сравнение';
-      case 'recommendations': return 'Бизнес-рекомендации';
+      case 'recommendations': return 'AI Бизнес-Ассистент';
+      case 'messengers': return 'Мессенджеры';
       case 'users': return 'Управление пользователями';
+      case 'integrations': return 'Интеграции';
+      case 'settings': return 'Настройки';
       default: return 'Обзор';
     }
   };
@@ -531,8 +632,11 @@ function App() {
        case 'inventory-map': return 'Географическое распределение складских запасов';
        case 'analytics': return 'Глубокий анализ данных продаж';
        case 'comparison': return 'Сравнение эффективности периодов';
-       case 'recommendations': return 'AI-анализ бизнеса и поиск точек роста';
+       case 'recommendations': return 'AI-анализ бизнеса, поиск точек роста и ошибок';
+       case 'messengers': return 'Объединенный центр сообщений с клиентами';
        case 'users': return 'Администрирование сотрудников и прав доступа';
+       case 'integrations': return 'Управление подключениями к внешним сервисам';
+       case 'settings': return 'Конфигурация системы и AI-ассистента';
        default: return 'Обзор ключевых показателей эффективности за выбранный период';
      }
   };
@@ -563,7 +667,7 @@ function App() {
   }
 
   // Determine if Date filters should be shown
-  const showDateFilters = currentView === 'dealer' || (activeTab !== 'comparison' && activeTab !== 'inventory' && activeTab !== 'inventory-map' && activeTab !== 'recommendations' && activeTab !== 'users');
+  const showDateFilters = currentView === 'dealer' || (activeTab !== 'comparison' && activeTab !== 'inventory' && activeTab !== 'inventory-map' && activeTab !== 'recommendations' && activeTab !== 'messengers' && activeTab !== 'users' && activeTab !== 'settings' && activeTab !== 'integrations');
   
   // Can upload?
   const canUpload = authService.canUploadData(currentUser.role);
@@ -571,7 +675,13 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-900">
       {/* Sidebar */}
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} currentUser={currentUser} onLogout={handleLogout} />
+      <Sidebar 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab} 
+        currentUser={currentUser} 
+        onLogout={handleLogout} 
+        unreadMessages={unreadMessagesCount}
+      />
 
       {/* Main Content */}
       <main className="flex-1 md:ml-64 p-4 md:p-8 overflow-x-hidden">
@@ -587,7 +697,7 @@ function App() {
               </p>
             </div>
             
-            {activeTab !== 'users' && (
+            {activeTab !== 'users' && activeTab !== 'settings' && activeTab !== 'integrations' && activeTab !== 'messengers' && (
                 <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm w-full xl:w-auto z-20 relative">
                     <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center">
                         
@@ -826,81 +936,141 @@ function App() {
                         <h3 className="text-lg font-bold text-slate-900">
                             {dashboardChartMode === 'revenue' ? 'Динамика выручки' : 'Динамика продаж (шт)'}
                         </h3>
-                        <div className="bg-slate-100 p-1 rounded-lg flex">
-                             <button 
-                                 onClick={() => setDashboardChartMode('revenue')}
-                                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${dashboardChartMode === 'revenue' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                             >
-                                 <RussianRuble className="w-3 h-3" />
-                                 Выручка
-                             </button>
-                             <button 
-                                 onClick={() => setDashboardChartMode('units')}
-                                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${dashboardChartMode === 'units' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                             >
-                                 <Box className="w-3 h-3" />
-                                 Продажи
-                             </button>
+                        <div className="flex gap-2">
+                            <div className="bg-slate-100 p-1 rounded-lg flex">
+                                <button 
+                                    onClick={() => setDashboardChartType('area')}
+                                    className={`p-1.5 rounded-md text-xs font-medium transition-all ${dashboardChartType === 'area' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                    title="Линейный график"
+                                >
+                                    <LineChartIcon className="w-4 h-4" />
+                                </button>
+                                <button 
+                                    onClick={() => setDashboardChartType('bar')}
+                                    className={`p-1.5 rounded-md text-xs font-medium transition-all ${dashboardChartType === 'bar' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                    title="Столбчатая диаграмма"
+                                >
+                                    <BarChart2 className="w-4 h-4" />
+                                </button>
+                            </div>
+                            <div className="bg-slate-100 p-1 rounded-lg flex">
+                                <button 
+                                    onClick={() => setDashboardChartMode('revenue')}
+                                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${dashboardChartMode === 'revenue' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                >
+                                    <RussianRuble className="w-3 h-3" />
+                                    Выручка
+                                </button>
+                                <button 
+                                    onClick={() => setDashboardChartMode('units')}
+                                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${dashboardChartMode === 'units' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                >
+                                    <Box className="w-3 h-3" />
+                                    Продажи
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div className="h-[300px]">
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={monthlyData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                          <defs>
-                            <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorProf" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorUnits" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 12}} dy={10} />
-                          <YAxis 
-                            axisLine={false} 
-                            tickLine={false} 
-                            tick={{fill: '#64748b', fontSize: 12}} 
-                            tickFormatter={(value) => dashboardChartMode === 'revenue' ? `${(value / 1000000).toFixed(0)}M` : value.toString()} 
-                          />
-                          <Tooltip 
-                            formatter={(value: number, name: string) => {
-                                if (dashboardChartMode === 'revenue') return formatCurrency(value);
-                                return `${value} шт.`;
-                            }}
-                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                          />
-                          <Legend wrapperStyle={{ paddingTop: '20px' }} />
-                          
-                          {selectedYear === 'all' ? (
-                             availableYears.map((year, i) => (
-                                <Area 
-                                    key={year}
-                                    type="monotone" 
-                                    dataKey={dashboardChartMode === 'revenue' ? year.toString() : `${year}_units`}
-                                    name={dashboardChartMode === 'revenue' ? `${year}` : `${year} (шт)`}
-                                    stroke={COLORS[i % COLORS.length]} 
-                                    fillOpacity={0.1} 
-                                    fill={COLORS[i % COLORS.length]}
-                                    strokeWidth={2}
-                                />
-                             ))
-                          ) : (
-                            dashboardChartMode === 'revenue' ? (
-                                <>
-                                    <Area type="monotone" dataKey="Выручка" stroke="#6366f1" fillOpacity={1} fill="url(#colorRev)" strokeWidth={2} />
-                                    <Area type="monotone" dataKey="Прибыль" stroke="#10b981" fillOpacity={1} fill="url(#colorProf)" strokeWidth={2} />
-                                </>
+                        {dashboardChartType === 'area' ? (
+                            <AreaChart data={monthlyData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                            <defs>
+                                <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                                </linearGradient>
+                                <linearGradient id="colorProf" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                                </linearGradient>
+                                <linearGradient id="colorUnits" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                                </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 12}} dy={10} />
+                            <YAxis 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: '#64748b', fontSize: 12}} 
+                                tickFormatter={(value) => dashboardChartMode === 'revenue' ? `${(value / 1000000).toFixed(0)}M` : value.toString()} 
+                            />
+                            <Tooltip 
+                                formatter={(value: number, name: string) => {
+                                    if (dashboardChartMode === 'revenue') return formatCurrency(value);
+                                    return `${value} шт.`;
+                                }}
+                                contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                            />
+                            <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                            
+                            {selectedYear === 'all' ? (
+                                availableYears.map((year, i) => (
+                                    <Area 
+                                        key={year}
+                                        type="monotone" 
+                                        dataKey={dashboardChartMode === 'revenue' ? year.toString() : `${year}_units`}
+                                        name={dashboardChartMode === 'revenue' ? `${year}` : `${year} (шт)`}
+                                        stroke={COLORS[i % COLORS.length]} 
+                                        fillOpacity={0.1} 
+                                        fill={COLORS[i % COLORS.length]}
+                                        strokeWidth={2}
+                                    />
+                                ))
                             ) : (
-                                <Area type="monotone" dataKey="Продажи" stroke="#3b82f6" fillOpacity={1} fill="url(#colorUnits)" strokeWidth={2} />
-                            )
-                          )}
-                        </AreaChart>
+                                dashboardChartMode === 'revenue' ? (
+                                    <>
+                                        <Area type="monotone" dataKey="Выручка" stroke="#6366f1" fillOpacity={1} fill="url(#colorRev)" strokeWidth={2} />
+                                        <Area type="monotone" dataKey="Прибыль" stroke="#10b981" fillOpacity={1} fill="url(#colorProf)" strokeWidth={2} />
+                                    </>
+                                ) : (
+                                    <Area type="monotone" dataKey="Продажи" stroke="#3b82f6" fillOpacity={1} fill="url(#colorUnits)" strokeWidth={2} />
+                                )
+                            )}
+                            </AreaChart>
+                        ) : (
+                            <BarChart data={monthlyData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 12}} dy={10} />
+                                <YAxis 
+                                    axisLine={false} 
+                                    tickLine={false} 
+                                    tick={{fill: '#64748b', fontSize: 12}} 
+                                    tickFormatter={(value) => dashboardChartMode === 'revenue' ? `${(value / 1000000).toFixed(0)}M` : value.toString()} 
+                                />
+                                <Tooltip 
+                                    cursor={{fill: '#f8fafc'}}
+                                    formatter={(value: number, name: string) => {
+                                        if (dashboardChartMode === 'revenue') return formatCurrency(value);
+                                        return `${value} шт.`;
+                                    }}
+                                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                />
+                                <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                                {selectedYear === 'all' ? (
+                                    availableYears.map((year, i) => (
+                                        <Bar 
+                                            key={year}
+                                            dataKey={dashboardChartMode === 'revenue' ? year.toString() : `${year}_units`}
+                                            name={dashboardChartMode === 'revenue' ? `${year}` : `${year} (шт)`}
+                                            fill={COLORS[i % COLORS.length]} 
+                                            radius={[4, 4, 0, 0]}
+                                        />
+                                    ))
+                                ) : (
+                                    dashboardChartMode === 'revenue' ? (
+                                        <>
+                                            <Bar dataKey="Выручка" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                                            <Bar dataKey="Прибыль" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                        </>
+                                    ) : (
+                                        <Bar dataKey="Продажи" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                                    )
+                                )}
+                            </BarChart>
+                        )}
                       </ResponsiveContainer>
                     </div>
                   </div>
@@ -1051,13 +1221,24 @@ function App() {
             )}
 
             {activeTab === 'recommendations' && currentUser.role !== 'user' && (
-               <RecommendationsView salesRecords={filteredRecords} inventoryRecords={filteredInventoryRecords} />
+               <RecommendationsView salesRecords={recordsFilteredByMetadata} inventoryRecords={filteredInventoryRecords} />
             )}
 
-            {/* Removed standalone Map tab logic as it's now inside Sales */}
+            {/* NEW MESSENGER HUB */}
+            {activeTab === 'messengers' && currentUser.role === 'admin' && (
+                <MessengerHub onOpenSettings={() => setActiveTab('integrations')} />
+            )}
             
             {activeTab === 'users' && currentUser.role === 'admin' && (
                 <UserManagement />
+            )}
+
+            {activeTab === 'integrations' && currentUser.role === 'admin' && (
+                <IntegrationsHub />
+            )}
+
+            {activeTab === 'settings' && currentUser.role === 'admin' && (
+                <PromptSettings />
             )}
 
           </div>

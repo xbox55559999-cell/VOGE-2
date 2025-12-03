@@ -76,3 +76,28 @@ export interface User {
   lastLogin?: Date;
   isActive: boolean;
 }
+
+// Messenger Types
+export type Platform = 'telegram' | 'whatsapp' | 'website';
+
+export interface ChatMessage {
+    id: string;
+    chatId: string;
+    text: string;
+    isOutbound: boolean; // true = sent by admin, false = received from client
+    timestamp: number;
+    isRead: boolean;
+    isEdited?: boolean;
+}
+
+export interface ChatSession {
+    id: string;
+    platform: Platform;
+    contactName: string;
+    contactPhone?: string; // or username
+    avatarUrl?: string;
+    lastMessageText: string;
+    lastMessageTime: number;
+    unreadCount: number;
+    isPinned?: boolean;
+}

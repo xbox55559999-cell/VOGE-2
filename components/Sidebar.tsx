@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { LayoutDashboard, BarChart3, Users, Package, Settings, PieChart, GitCompare, Box, Sparkles, Map, MapPin, UserCircle, LogOut, Shield, ShoppingBag } from 'lucide-react';
+import { LayoutDashboard, BarChart3, Users, Package, Settings, PieChart, GitCompare, Box, Sparkles, Map, MapPin, UserCircle, LogOut, Shield, ShoppingBag, Settings2, Blocks, MessageCircle } from 'lucide-react';
 import { User, UserRole } from '../types';
 import { authService } from '../services/auth';
 
@@ -9,9 +9,10 @@ interface SidebarProps {
   setActiveTab: (tab: string) => void;
   currentUser: User | null;
   onLogout: () => void;
+  unreadMessages?: number;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, currentUser, onLogout }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, currentUser, onLogout, unreadMessages = 0 }) => {
   const role = currentUser?.role || 'user';
 
   // Base Menu
@@ -25,7 +26,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, curre
     { id: 'analytics', label: 'Глубокая аналитика', icon: BarChart3, roles: ['admin', 'analyst'] },
     { id: 'comparison', label: 'Сравнение периодов', icon: GitCompare, roles: ['admin', 'analyst'] },
     { id: 'recommendations', label: 'AI Рекомендации', icon: Sparkles, roles: ['admin', 'analyst'] },
+    { id: 'messengers', label: 'Мессенджеры', icon: MessageCircle, roles: ['admin'] },
     { id: 'users', label: 'Пользователи (CRM)', icon: Shield, roles: ['admin'] },
+    { id: 'integrations', label: 'Интеграции', icon: Blocks, roles: ['admin'] },
+    { id: 'settings', label: 'Настройки AI', icon: Settings2, roles: ['admin'] },
   ];
 
   const menuItems = allMenuItems.filter(item => item.roles.includes(role));
@@ -51,7 +55,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, curre
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 ${
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 relative ${
                 isActive 
                   ? 'bg-indigo-50 text-indigo-600 shadow-sm' 
                   : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
@@ -59,6 +63,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, curre
             >
               <Icon className={`w-5 h-5 ${isActive ? 'text-indigo-600' : 'text-slate-400'}`} />
               {item.label}
+              {item.id === 'messengers' && unreadMessages > 0 && (
+                  <span className="absolute right-3 bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                      {unreadMessages > 99 ? '99+' : unreadMessages}
+                  </span>
+              )}
             </button>
           );
         })}
