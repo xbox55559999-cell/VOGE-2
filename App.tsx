@@ -1,32 +1,57 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { MOCK_DATA } from './constants';
-import { RawData, SaleRecord } from './types';
-import { processData, formatCurrency, formatNumber } from './services/dataProcessor';
+import { RawData, SaleRecord, User } from './types';
+import { processData, formatCurrency, formatNumber, convertCSVToRawData } from './services/dataProcessor';
 import { saveToDB, loadFromDB } from './services/storage';
+import { authService } from './services/auth';
+import { Login } from './components/Login';
+import { UserManagement } from './components/UserManagement';
 import { Sidebar } from './components/Sidebar';
 import { StatCard } from './components/StatCard';
 import { DealerDetail } from './components/DealerDetail';
-import { ModelList } from './components/ModelList';
 import { ModelOfferDetail } from './components/ModelOfferDetail';
 import { DealerOfferSales } from './components/DealerOfferSales';
-import { DealersView } from './components/DealersView';
+// Import View Components and Types
+import { SalesView, SalesSubTab } from './components/SalesView'; 
 import { AnalyticsView } from './components/AnalyticsView';
 import { ComparisonView } from './components/ComparisonView';
-import { InventoryView } from './components/InventoryView';
+import { InventoryView, InventoryViewMode } from './components/InventoryView';
+import { RecommendationsView } from './components/RecommendationsView';
+import { InventoryMap } from './components/InventoryMap';
+import { FilterDropdown } from './components/FilterDropdown';
+// Charting
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   LineChart, Line, PieChart, Pie, Cell, AreaChart, Area 
 } from 'recharts';
+// Icons - Explicitly avoid Map to prevent shadowing
 import { 
   RussianRuble, ShoppingCart, TrendingUp, Wallet, 
-  Calendar, Filter, Download, Search, Package, ChevronRight, ChevronDown, Check, Tag, Upload, BadgeCheck, Box, Loader2
+  Calendar, Filter, Download, Search, Package, ChevronRight, ChevronDown, Check, Tag, Upload, Award, Box, Loader2, ArrowUpDown, X, ListFilter, MapPin as MapPinIcon
 } from 'lucide-react';
 
 const STORAGE_KEY = 'moto_analytics_data';
 const STORAGE_KEY_INVENTORY = 'moto_analytics_inventory';
 
+// Helper to safely read from localStorage
+const getInitialState = <T,>(key: string, defaultValue: T): T => {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved !== null) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error(`Error parsing localStorage key "${key}":`, e);
+  }
+  return defaultValue;
+};
+
 function App() {
+  // Auth State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isDataLoading, setIsDataLoading] = useState(true);
   
@@ -36,8 +61,34 @@ function App() {
   // Inventory Data State
   const [inventoryRawData, setInventoryRawData] = useState<RawData>({ total: { count_sold: 0, total_sold_price: 0, total_buy_price: 0 }, items: {} });
 
+  // Persistent States for Sales and Inventory Views
+  // Explicitly cast the initial value to the imported type to avoid issues if type import is elided
+  const [salesSubTab, setSalesSubTab] = useState<SalesSubTab>('overview');
+  const [salesCrmSearch, setSalesCrmSearch] = useState('');
+  const [inventoryViewMode, setInventoryViewMode] = useState<InventoryViewMode>('dealers');
+
+  // Check Auth on Mount
+  useEffect(() => {
+      const user = authService.getCurrentUser();
+      setCurrentUser(user);
+      setIsAuthChecking(false);
+  }, []);
+
+  const handleLogin = (user: User) => {
+      setCurrentUser(user);
+      setActiveTab('dashboard'); // Reset to dashboard on login
+  };
+
+  const handleLogout = () => {
+      authService.logout();
+      setCurrentUser(null);
+  };
+
   // Load Data from IndexedDB on Mount
   useEffect(() => {
+    // Only load data if authenticated
+    if (!currentUser) return;
+
     const initData = async () => {
         setIsDataLoading(true);
         try {
@@ -65,7 +116,7 @@ function App() {
     };
 
     initData();
-  }, []);
+  }, [currentUser]); // Depend on currentUser to reload if re-logging
 
   // View State
   const [currentView, setCurrentView] = useState<'dashboard' | 'dealer'>('dashboard');
@@ -79,25 +130,40 @@ function App() {
   // Dashboard Chart State
   const [dashboardChartMode, setDashboardChartMode] = useState<'revenue' | 'units'>('revenue');
 
-  // Filter State
-  const [selectedYear, setSelectedYear] = useState<number | 'all'>('all');
-  const [selectedBrand, setSelectedBrand] = useState<string>('all');
-  const [selectedDealer, setSelectedDealer] = useState<string>('all');
+  // Dashboard Table Sorting & Search State
+  const [dashboardSortField, setDashboardSortField] = useState<'name' | 'value'>('value');
+  const [dashboardSortDirection, setDashboardSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [dashboardSearchQuery, setDashboardSearchQuery] = useState('');
+
+  // Filter State (Initialized from LocalStorage)
+  const [selectedYear, setSelectedYear] = useState<number | 'all'>(() => getInitialState('filter_year', 'all'));
+  const [selectedBrand, setSelectedBrand] = useState<string>(() => getInitialState('filter_brand', 'all'));
+  const [selectedCity, setSelectedCity] = useState<string>(() => getInitialState('filter_city', 'all'));
+  const [selectedDealer, setSelectedDealer] = useState<string>(() => getInitialState('filter_dealer', 'all'));
+  
   // Multi-select for models
-  const [selectedModels, setSelectedModels] = useState<string[]>([]);
-  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [selectedModels, setSelectedModels] = useState<string[]>(() => getInitialState('filter_models', []));
   // Multi-select for offers
-  const [selectedOffers, setSelectedOffers] = useState<string[]>([]);
-  const [isOfferDropdownOpen, setIsOfferDropdownOpen] = useState(false);
+  const [selectedOffers, setSelectedOffers] = useState<string[]>(() => getInitialState('filter_offers', []));
 
   // Date Range Filter
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
+  const [startDate, setStartDate] = useState<string>(() => getInitialState('filter_startDate', ''));
+  const [endDate, setEndDate] = useState<string>(() => getInitialState('filter_endDate', ''));
 
   // File Upload Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Reset detailed views when tab changes
+  // Persist filters to localStorage
+  useEffect(() => { localStorage.setItem('filter_year', JSON.stringify(selectedYear)); }, [selectedYear]);
+  useEffect(() => { localStorage.setItem('filter_brand', JSON.stringify(selectedBrand)); }, [selectedBrand]);
+  useEffect(() => { localStorage.setItem('filter_city', JSON.stringify(selectedCity)); }, [selectedCity]);
+  useEffect(() => { localStorage.setItem('filter_dealer', JSON.stringify(selectedDealer)); }, [selectedDealer]);
+  useEffect(() => { localStorage.setItem('filter_models', JSON.stringify(selectedModels)); }, [selectedModels]);
+  useEffect(() => { localStorage.setItem('filter_offers', JSON.stringify(selectedOffers)); }, [selectedOffers]);
+  useEffect(() => { localStorage.setItem('filter_startDate', JSON.stringify(startDate)); }, [startDate]);
+  useEffect(() => { localStorage.setItem('filter_endDate', JSON.stringify(endDate)); }, [endDate]);
+
+  // Reset detailed views when tab changes, but keep sub-tabs persistent
   useEffect(() => {
     setCurrentView('dashboard');
     setSelectedDealerDetailId(null);
@@ -113,56 +179,67 @@ function App() {
   // Determine which dataset to use for filters based on active tab
   // This ensures filters populate correctly if only inventory data is loaded
   const currentDataset = useMemo(() => {
-    return activeTab === 'inventory' ? allInventoryRecords : allRecords;
+    if (activeTab === 'inventory' || activeTab === 'inventory-map') {
+        return allInventoryRecords;
+    }
+    return allRecords;
   }, [activeTab, allRecords, allInventoryRecords]);
 
   // 2. Extract Filter Options from the ACTIVE dataset
   const availableYears = useMemo(() => Array.from(new Set(currentDataset.map(r => r.year))).sort(), [currentDataset]);
   const availableBrands = useMemo(() => Array.from(new Set(currentDataset.map(r => r.brand))).sort(), [currentDataset]);
-  const availableDealers = useMemo(() => Array.from(new Set(currentDataset.map(r => r.dealerName))).sort(), [currentDataset]);
+  const availableCities = useMemo(() => Array.from(new Set(currentDataset.map(r => r.city))).sort(), [currentDataset]);
+  
+  const availableDealers = useMemo(() => {
+    let records = currentDataset;
+    if (selectedCity !== 'all') {
+        records = records.filter(r => r.city === selectedCity);
+    }
+    return Array.from(new Set(records.map(r => r.dealerName))).sort();
+  }, [currentDataset, selectedCity]);
+
   const availableModels = useMemo(() => {
-      const records = selectedBrand === 'all' ? currentDataset : currentDataset.filter(r => r.brand === selectedBrand);
+      let records = currentDataset;
+      if (selectedBrand !== 'all') records = records.filter(r => r.brand === selectedBrand);
+      if (selectedCity !== 'all') records = records.filter(r => r.city === selectedCity);
+      
       return Array.from(new Set(records.map(r => r.modelName))).sort();
-  }, [currentDataset, selectedBrand]);
+  }, [currentDataset, selectedBrand, selectedCity]);
   
   const availableOffers = useMemo(() => {
       let records = currentDataset;
-      if (selectedBrand !== 'all') {
-          records = records.filter(r => r.brand === selectedBrand);
-      }
-      if (selectedModels.length > 0) {
-          records = records.filter(r => selectedModels.includes(r.modelName));
-      }
+      if (selectedBrand !== 'all') records = records.filter(r => r.brand === selectedBrand);
+      if (selectedCity !== 'all') records = records.filter(r => r.city === selectedCity);
+      if (selectedModels.length > 0) records = records.filter(r => selectedModels.includes(r.modelName));
+      
       return Array.from(new Set(records.map(r => r.offerName))).sort();
-  }, [currentDataset, selectedBrand, selectedModels]);
+  }, [currentDataset, selectedBrand, selectedCity, selectedModels]);
 
-  // Helper to toggle model selection
-  const toggleModel = (model: string) => {
-    setSelectedModels(prev => {
-      if (prev.includes(model)) {
-        return prev.filter(m => m !== model);
-      } else {
-        return [...prev, model];
-      }
-    });
-  };
+  // Ref to track if it's the first run for brand effect to avoid clearing restored state
+  const isFirstBrandRun = useRef(true);
 
-  // Helper to toggle offer selection
-  const toggleOffer = (offer: string) => {
-    setSelectedOffers(prev => {
-      if (prev.includes(offer)) {
-        return prev.filter(o => o !== offer);
-      } else {
-        return [...prev, offer];
-      }
-    });
-  };
-  
   // Reset dependent filters when brand changes
   useEffect(() => {
+      // Skip the first run so we don't clear restored models/offers from localStorage
+      if (isFirstBrandRun.current) {
+          isFirstBrandRun.current = false;
+          return;
+      }
       setSelectedModels([]);
       setSelectedOffers([]);
   }, [selectedBrand]);
+
+  // Reset dealer if city changes and dealer doesn't belong to city
+  useEffect(() => {
+      if (selectedCity !== 'all' && selectedDealer !== 'all') {
+          // Check if currently selected dealer is in the available dealers for this city
+          // If not availableDealers check is expensive, just reset to 'all' is safer or check against records
+          // Since we computed availableDealers above, we can check that list, but it's a string array.
+          if (!availableDealers.includes(selectedDealer)) {
+              setSelectedDealer('all');
+          }
+      }
+  }, [selectedCity, availableDealers]);
 
   // Handle File Upload
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -173,12 +250,26 @@ function App() {
     reader.onload = async (e) => {
       try {
         const content = e.target?.result as string;
-        const parsedData = JSON.parse(content);
+        const fileExt = file.name.split('.').pop()?.toLowerCase();
+        
+        let parsedData: RawData;
 
-        // Basic validation
-        if (!parsedData.total || !parsedData.items) {
-          alert('Ошибка: Неверный формат файла. Файл должен содержать структуру MotoAnalytics (total, items).');
-          return;
+        // Parse logic based on extension
+        if (fileExt === 'csv') {
+            try {
+                parsedData = convertCSVToRawData(content);
+            } catch (err: any) {
+                alert(`Ошибка парсинга CSV: ${err.message}`);
+                return;
+            }
+        } else {
+            // Assume JSON
+            parsedData = JSON.parse(content);
+            // Basic validation for JSON
+            if (!parsedData.total || !parsedData.items) {
+                alert('Ошибка: Неверный формат JSON файла. Ожидается структура { total, items }.');
+                return;
+            }
         }
 
         // Check active tab to decide where to load data
@@ -186,7 +277,7 @@ function App() {
             setInventoryRawData(parsedData);
             try {
                 await saveToDB(STORAGE_KEY_INVENTORY, parsedData);
-                alert('Файл остатков успешно загружен и сохранен в базе данных!');
+                alert(`Файл остатков (${fileExt?.toUpperCase()}) успешно загружен и сохранен в базе данных!`);
             } catch (storageError) {
                 console.error('DB error:', storageError);
                 alert('Файл остатков загружен в память, но не сохранен в БД.');
@@ -196,7 +287,7 @@ function App() {
             setRawData(parsedData);
             try {
                 await saveToDB(STORAGE_KEY, parsedData);
-                alert('Файл продаж успешно загружен и сохранен в базе данных!');
+                alert(`Файл продаж (${fileExt?.toUpperCase()}) успешно загружен и сохранен в базе данных!`);
             } catch (storageError) {
                 console.error('DB error:', storageError);
                 alert('Файл продаж загружен в память, но не сохранен в БД.');
@@ -204,13 +295,7 @@ function App() {
         }
         
         // Reset filters
-        setSelectedYear('all');
-        setSelectedBrand('all');
-        setSelectedDealer('all');
-        setSelectedModels([]);
-        setSelectedOffers([]);
-        setStartDate('');
-        setEndDate('');
+        clearAllFilters();
         
         // Reset file input
         if (fileInputRef.current) {
@@ -218,8 +303,8 @@ function App() {
         }
 
       } catch (error) {
-        console.error('Error parsing JSON:', error);
-        alert('Ошибка при чтении файла. Убедитесь, что это корректный JSON.');
+        console.error('Error processing file:', error);
+        alert('Ошибка при чтении файла. Убедитесь, что формат корректен.');
       }
     };
     reader.readAsText(file);
@@ -229,10 +314,32 @@ function App() {
     fileInputRef.current?.click();
   };
 
+  const clearAllFilters = () => {
+    setSelectedYear('all');
+    setStartDate('');
+    setEndDate('');
+    setSelectedBrand('all');
+    setSelectedCity('all');
+    setSelectedDealer('all');
+    setSelectedModels([]);
+    setSelectedOffers([]);
+  };
+
+  const hasActiveFilters = 
+    selectedYear !== 'all' || 
+    startDate !== '' || 
+    endDate !== '' || 
+    selectedBrand !== 'all' || 
+    selectedCity !== 'all' || 
+    (selectedDealer !== 'all' && currentView !== 'dealer') || 
+    selectedModels.length > 0 || 
+    selectedOffers.length > 0;
+
   // 3. Filter Records Logic (Reusable for Sales and Inventory)
   const filterRecordsGeneric = (recordsToFilter: SaleRecord[]) => {
       return recordsToFilter.filter(record => {
         if (selectedBrand !== 'all' && record.brand !== selectedBrand) return false;
+        if (selectedCity !== 'all' && record.city !== selectedCity) return false;
         if (selectedDealer !== 'all' && record.dealerName !== selectedDealer) return false;
         if (selectedModels.length > 0 && !selectedModels.includes(record.modelName)) return false;
         if (selectedOffers.length > 0 && !selectedOffers.includes(record.offerName)) return false;
@@ -240,7 +347,7 @@ function App() {
       });
   };
 
-  const recordsFilteredByMetadata = useMemo(() => filterRecordsGeneric(allRecords), [allRecords, selectedBrand, selectedDealer, selectedModels, selectedOffers]);
+  const recordsFilteredByMetadata = useMemo(() => filterRecordsGeneric(allRecords), [allRecords, selectedBrand, selectedCity, selectedDealer, selectedModels, selectedOffers]);
 
   // Sales Records with Date Filtering
   const filteredRecords = useMemo(() => {
@@ -266,7 +373,7 @@ function App() {
   // Inventory Records (No date filtering applied typically for current stock)
   const filteredInventoryRecords = useMemo(() => {
       return filterRecordsGeneric(allInventoryRecords);
-  }, [allInventoryRecords, selectedBrand, selectedDealer, selectedModels, selectedOffers]);
+  }, [allInventoryRecords, selectedBrand, selectedCity, selectedDealer, selectedModels, selectedOffers]);
 
 
   // 4. Calculate KPIs
@@ -283,6 +390,7 @@ function App() {
 
   // 5. Prepare Chart Data: Monthly Sales Comparison
   const monthlyData = useMemo(() => {
+    // ... (same as before)
     const data: any[] = [];
     const months = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
     
@@ -308,17 +416,31 @@ function App() {
     return data;
   }, [recordsFilteredByMetadata, filteredRecords, availableYears, selectedYear]);
 
-  // 6. Prepare Chart Data: Top Dealers
-  const topDealers = useMemo(() => {
+  // 6. Prepare Chart Data: Top Dealers (Dashboard Table)
+  const dashboardDealers = useMemo(() => {
     const map = new Map<string, number>();
     filteredRecords.forEach(r => {
       map.set(r.dealerName, (map.get(r.dealerName) || 0) + r.soldPrice);
     });
-    return Array.from(map.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 10); // Top 10
-  }, [filteredRecords]);
+
+    let dealers = Array.from(map.entries())
+      .map(([name, value]) => ({ name, value }));
+    
+    if (dashboardSearchQuery) {
+        dealers = dealers.filter(d => d.name.toLowerCase().includes(dashboardSearchQuery.toLowerCase()));
+    }
+
+    dealers.sort((a, b) => {
+        const factor = dashboardSortDirection === 'asc' ? 1 : -1;
+        if (dashboardSortField === 'name') {
+            return a.name.localeCompare(b.name) * factor;
+        } else {
+            return (a.value - b.value) * factor;
+        }
+    });
+
+    return dealers.slice(0, 10);
+  }, [filteredRecords, dashboardSearchQuery, dashboardSortField, dashboardSortDirection]);
 
   // 7. Prepare Chart Data: Top Models
   const topModels = useMemo(() => {
@@ -373,14 +495,30 @@ function App() {
       setSelectedDealerForOffer(null);
   };
 
+  const handleDashboardSort = (field: 'name' | 'value') => {
+      if (dashboardSortField === field) {
+          setDashboardSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+      } else {
+          setDashboardSortField(field);
+          setDashboardSortDirection('desc');
+      }
+  };
+
+  const renderDashboardSortIcon = (field: 'name' | 'value') => {
+      if (dashboardSortField !== field) return <ArrowUpDown className="w-3 h-3 text-slate-300 ml-1 inline" />;
+      return <ArrowUpDown className={`w-3 h-3 ml-1 inline ${dashboardSortDirection === 'asc' ? 'text-indigo-600 rotate-180' : 'text-indigo-600'}`} />;
+    };
+
   const getPageTitle = () => {
     if (currentView === 'dealer') return 'Карточка дилера';
     switch (activeTab) {
-      case 'models': return 'Модели';
-      case 'dealers': return 'Дилеры';
+      case 'sales': return 'Управление продажами';
       case 'inventory': return 'Остатки';
+      case 'inventory-map': return 'Остатки на карте';
       case 'analytics': return 'Аналитика';
       case 'comparison': return 'Сравнение';
+      case 'recommendations': return 'Бизнес-рекомендации';
+      case 'users': return 'Управление пользователями';
       default: return 'Обзор';
     }
   };
@@ -388,16 +526,31 @@ function App() {
   const getPageDescription = () => {
      if (currentView === 'dealer') return 'Детальная статистика продаж и показатели партнера';
      switch (activeTab) {
-       case 'models': return 'Детальная статистика по модельному ряду';
-       case 'dealers': return 'Управление и анализ дилерской сети';
+       case 'sales': return 'Реестр сделок, дилерская сеть и выполнение планов';
        case 'inventory': return 'Анализ складских запасов дилеров';
+       case 'inventory-map': return 'Географическое распределение складских запасов';
        case 'analytics': return 'Глубокий анализ данных продаж';
        case 'comparison': return 'Сравнение эффективности периодов';
+       case 'recommendations': return 'AI-анализ бизнеса и поиск точек роста';
+       case 'users': return 'Администрирование сотрудников и прав доступа';
        default: return 'Обзор ключевых показателей эффективности за выбранный период';
      }
   };
 
   const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+  // Auth Guard
+  if (isAuthChecking) {
+      return (
+          <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+              <Loader2 className="w-10 h-10 text-indigo-600 animate-spin" />
+          </div>
+      );
+  }
+
+  if (!currentUser) {
+      return <Login onLogin={handleLogin} />;
+  }
 
   if (isDataLoading) {
       return (
@@ -410,12 +563,15 @@ function App() {
   }
 
   // Determine if Date filters should be shown
-  const showDateFilters = currentView === 'dealer' || (activeTab !== 'comparison' && activeTab !== 'inventory');
+  const showDateFilters = currentView === 'dealer' || (activeTab !== 'comparison' && activeTab !== 'inventory' && activeTab !== 'inventory-map' && activeTab !== 'recommendations' && activeTab !== 'users');
+  
+  // Can upload?
+  const canUpload = authService.canUploadData(currentUser.role);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-900">
       {/* Sidebar */}
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} currentUser={currentUser} onLogout={handleLogout} />
 
       {/* Main Content */}
       <main className="flex-1 md:ml-64 p-4 md:p-8 overflow-x-hidden">
@@ -431,221 +587,137 @@ function App() {
               </p>
             </div>
             
-            <div className="flex flex-wrap gap-3 bg-white p-2 rounded-xl border border-slate-200 shadow-sm w-full xl:w-auto z-20 relative">
-                
-                {/* Date Filters */}
-                {showDateFilters && (
-                  <>
-                        <div className="relative flex-grow xl:flex-grow-0">
-                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <Calendar className="h-4 w-4 text-slate-400" />
-                          </div>
-                          <select 
-                            className="w-full xl:w-auto pl-9 pr-8 py-2 bg-slate-50 border-none rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500 cursor-pointer outline-none hover:bg-slate-100 transition-colors appearance-none"
-                            value={selectedYear}
-                            onChange={(e) => setSelectedYear(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-                          >
-                            <option value="all">Все года</option>
-                            {availableYears.map(year => (
-                              <option key={year} value={year}>{year}</option>
-                            ))}
-                          </select>
-                        </div>
+            {activeTab !== 'users' && (
+                <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm w-full xl:w-auto z-20 relative">
+                    <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center">
+                        
+                        {/* Date Group */}
+                        {showDateFilters && (
+                            <div className="flex flex-wrap gap-2 items-center w-full lg:w-auto border-b lg:border-b-0 lg:border-r border-slate-100 pb-3 lg:pb-0 lg:pr-4">
+                                <div className="text-xs font-semibold text-slate-400 uppercase mr-1 hidden xl:block">Период:</div>
+                                <div className="w-full sm:w-auto">
+                                    <FilterDropdown 
+                                        label="Год" 
+                                        icon={Calendar}
+                                        options={availableYears}
+                                        value={selectedYear}
+                                        onChange={setSelectedYear}
+                                        mode="single"
+                                    />
+                                </div>
 
-                        <div className="flex items-center gap-2">
-                          <div className="relative">
-                              <input 
-                                type="date" 
-                                className="pl-3 pr-3 py-2 bg-slate-50 border-none rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none hover:bg-slate-100 transition-colors"
-                                value={startDate}
-                                onChange={(e) => setStartDate(e.target.value)}
-                                placeholder="С"
-                              />
-                          </div>
-                          <span className="text-slate-400">-</span>
-                          <div className="relative">
-                              <input 
-                                type="date" 
-                                className="pl-3 pr-3 py-2 bg-slate-50 border-none rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none hover:bg-slate-100 transition-colors"
-                                value={endDate}
-                                onChange={(e) => setEndDate(e.target.value)}
-                                placeholder="По"
-                              />
-                          </div>
-                        </div>
-                  </>
-                )}
-
-                {/* Brand Filter */}
-                <div className="relative flex-grow xl:flex-grow-0">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <BadgeCheck className="h-4 w-4 text-slate-400" />
-                  </div>
-                  <select 
-                    className="w-full xl:w-auto pl-9 pr-8 py-2 bg-slate-50 border-none rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500 cursor-pointer outline-none hover:bg-slate-100 transition-colors appearance-none"
-                    value={selectedBrand}
-                    onChange={(e) => setSelectedBrand(e.target.value)}
-                  >
-                    <option value="all">Все марки</option>
-                    {availableBrands.map(brand => (
-                      <option key={brand} value={brand}>{brand}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Dealer Filter - Disabled when in Dealer Detail View */}
-                <div className="relative flex-grow xl:flex-grow-0">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <Filter className="h-4 w-4 text-slate-400" />
-                  </div>
-                  <select 
-                    className={`w-full xl:w-[200px] pl-9 pr-8 py-2 bg-slate-50 border-none rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-colors appearance-none truncate ${currentView === 'dealer' ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-100'}`}
-                    value={selectedDealer}
-                    onChange={(e) => setSelectedDealer(e.target.value)}
-                    disabled={currentView === 'dealer'}
-                    title={currentView === 'dealer' ? "Фильтр недоступен в карточке дилера" : "Выберите дилера"}
-                  >
-                    <option value="all">Все дилеры</option>
-                    {availableDealers.map(dealer => (
-                      <option key={dealer} value={dealer}>{dealer}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Model Filter */}
-                <div className="relative flex-grow xl:flex-grow-0">
-                  {isModelDropdownOpen && (
-                    <div className="fixed inset-0 z-40" onClick={() => setIsModelDropdownOpen(false)} />
-                  )}
-                  
-                  <button 
-                    onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-                    className="w-full xl:w-[220px] pl-3 pr-4 py-2 bg-slate-50 border-none rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none hover:bg-slate-100 transition-colors flex items-center justify-between relative z-50"
-                  >
-                    <div className="flex items-center gap-2 truncate">
-                      <Package className="h-4 w-4 text-slate-400 flex-shrink-0" />
-                      <span className="truncate block">
-                        {selectedModels.length === 0 
-                          ? 'Все модели' 
-                          : selectedModels.length === 1 
-                            ? selectedModels[0] 
-                            : `Модели (${selectedModels.length})`}
-                      </span>
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform flex-shrink-0 ${isModelDropdownOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  
-                  {isModelDropdownOpen && (
-                    <div className="absolute top-full right-0 mt-2 w-[280px] max-h-[400px] overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-2 animate-fade-in">
-                      <div 
-                        onClick={() => setSelectedModels([])}
-                        className={`flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer text-sm transition-colors ${selectedModels.length === 0 ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-700'}`}
-                      >
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedModels.length === 0 ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 bg-white'}`}>
-                            {selectedModels.length === 0 && <Check className="w-3 h-3 text-white" />}
-                        </div>
-                        Все модели
-                      </div>
-                      <div className="my-1 border-b border-slate-100"></div>
-                      <div className="space-y-0.5">
-                        {availableModels.map(model => {
-                          const isSelected = selectedModels.includes(model);
-                          return (
-                            <div 
-                              key={model} 
-                              onClick={() => toggleModel(model)}
-                              className={`flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer text-sm transition-colors ${isSelected ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-700'}`}
-                            >
-                              <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isSelected ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 bg-white'}`}>
-                                {isSelected && <Check className="w-3 h-3 text-white" />}
-                              </div>
-                              <span className="truncate">{model}</span>
+                                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 hover:border-indigo-300 transition-colors rounded-xl px-3 py-2.5 h-[42px] shadow-sm relative group flex-grow sm:flex-grow-0">
+                                    <Calendar className="w-4 h-4 text-slate-400 group-hover:text-indigo-400 transition-colors flex-shrink-0" />
+                                    <input 
+                                        type="date" 
+                                        className="bg-transparent border-none text-sm text-slate-700 focus:ring-0 outline-none w-24 p-0"
+                                        value={startDate}
+                                        onChange={(e) => setStartDate(e.target.value)}
+                                        title="С даты"
+                                    />
+                                    <span className="text-slate-300 mx-1">→</span>
+                                    <input 
+                                        type="date" 
+                                        className="bg-transparent border-none text-sm text-slate-700 focus:ring-0 outline-none w-24 p-0"
+                                        value={endDate}
+                                        onChange={(e) => setEndDate(e.target.value)}
+                                        title="По дату"
+                                    />
+                                </div>
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                        )}
 
-                {/* Offer Filter */}
-                <div className="relative flex-grow xl:flex-grow-0">
-                  {isOfferDropdownOpen && (
-                    <div className="fixed inset-0 z-40" onClick={() => setIsOfferDropdownOpen(false)} />
-                  )}
-                  
-                  <button 
-                    onClick={() => setIsOfferDropdownOpen(!isOfferDropdownOpen)}
-                    className="w-full xl:w-[220px] pl-3 pr-4 py-2 bg-slate-50 border-none rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none hover:bg-slate-100 transition-colors flex items-center justify-between relative z-50"
-                  >
-                    <div className="flex items-center gap-2 truncate">
-                      <Tag className="h-4 w-4 text-slate-400 flex-shrink-0" />
-                      <span className="truncate block">
-                        {selectedOffers.length === 0 
-                          ? 'Все комплектации' 
-                          : selectedOffers.length === 1 
-                            ? selectedOffers[0] 
-                            : `Комплектации (${selectedOffers.length})`}
-                      </span>
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform flex-shrink-0 ${isOfferDropdownOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  
-                  {isOfferDropdownOpen && (
-                    <div className="absolute top-full right-0 mt-2 w-[280px] max-h-[400px] overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-2 animate-fade-in">
-                      <div 
-                        onClick={() => setSelectedOffers([])}
-                        className={`flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer text-sm transition-colors ${selectedOffers.length === 0 ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-700'}`}
-                      >
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedOffers.length === 0 ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 bg-white'}`}>
-                            {selectedOffers.length === 0 && <Check className="w-3 h-3 text-white" />}
+                        {/* Attribute Group */}
+                        <div className="flex flex-wrap gap-2 items-center flex-grow">
+                            <div className="text-xs font-semibold text-slate-400 uppercase mr-1 hidden xl:block">Фильтры:</div>
+                            
+                            <FilterDropdown 
+                                label="Марка" 
+                                icon={Award}
+                                options={availableBrands}
+                                value={selectedBrand}
+                                onChange={setSelectedBrand}
+                                mode="single"
+                            />
+
+                             <FilterDropdown 
+                                label="Город" 
+                                icon={MapPinIcon}
+                                options={availableCities}
+                                value={selectedCity}
+                                onChange={setSelectedCity}
+                                mode="single"
+                            />
+
+                            <FilterDropdown 
+                                label="Дилер" 
+                                icon={Filter}
+                                options={availableDealers}
+                                value={selectedDealer}
+                                onChange={setSelectedDealer}
+                                mode="single"
+                                searchable={true}
+                                placeholder="Найти дилера..."
+                                disabled={currentView === 'dealer'}
+                            />
+
+                            <FilterDropdown 
+                                label="Модели" 
+                                icon={Package}
+                                options={availableModels}
+                                value={selectedModels}
+                                onChange={setSelectedModels}
+                                mode="multi"
+                                searchable={true}
+                                placeholder="Выберите модели..."
+                            />
+
+                            <FilterDropdown 
+                                label="Комплектации" 
+                                icon={Tag}
+                                options={availableOffers}
+                                value={selectedOffers}
+                                onChange={setSelectedOffers}
+                                mode="multi"
+                                searchable={true}
+                                placeholder="Выберите комплектации..."
+                            />
                         </div>
-                        Все комплектации
-                      </div>
-                      <div className="my-1 border-b border-slate-100"></div>
-                      <div className="space-y-0.5">
-                        {availableOffers.map(offer => {
-                          const isSelected = selectedOffers.includes(offer);
-                          return (
-                            <div 
-                              key={offer} 
-                              onClick={() => toggleOffer(offer)}
-                              className={`flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer text-sm transition-colors ${isSelected ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-700'}`}
-                            >
-                              <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isSelected ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 bg-white'}`}>
-                                {isSelected && <Check className="w-3 h-3 text-white" />}
-                              </div>
-                              <span className="truncate">{offer}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
+
+                        {/* Actions Group */}
+                        <div className="flex items-center gap-2 ml-auto pl-4 border-l border-slate-100">
+                            {hasActiveFilters && (
+                                <button 
+                                    onClick={clearAllFilters}
+                                    className="p-2.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-colors h-[42px] w-[42px] flex items-center justify-center border border-transparent hover:border-rose-100"
+                                    title="Сбросить все фильтры"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            )}
+
+                            {canUpload && (
+                                <div className="flex items-center gap-1">
+                                    <input 
+                                        type="file" 
+                                        ref={fileInputRef} 
+                                        onChange={handleFileUpload} 
+                                        accept=".json,.csv" 
+                                        className="hidden" 
+                                    />
+                                    <button 
+                                        onClick={triggerFileUpload}
+                                        className="p-2.5 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition-colors h-[42px] w-[42px] flex items-center justify-center shadow-sm border border-indigo-100"
+                                        title={activeTab === 'inventory' ? "Импорт остатков (JSON/CSV)" : "Импорт продаж (JSON/CSV)"}
+                                    >
+                                        <Upload className="w-5 h-5" />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                     </div>
-                  )}
                 </div>
-                
-                {/* File Upload Button */}
-                <div className="flex items-center">
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handleFileUpload} 
-                    accept=".json" 
-                    className="hidden" 
-                  />
-                  <button 
-                    onClick={triggerFileUpload}
-                    className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                    title={activeTab === 'inventory' ? "Загрузить остатки" : "Загрузить продажи"}
-                  >
-                    <Upload className="w-5 h-5" />
-                  </button>
-                  
-                  <button className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors">
-                    <Download className="w-5 h-5" />
-                  </button>
-                </div>
-            </div>
+            )}
         </div>
 
         {/* View Switcher */}
@@ -655,6 +727,29 @@ function App() {
               records={filteredRecords.filter(r => r.dealerName === selectedDealerDetailId)}
               onBack={handleBackToDashboard}
            />
+        ) : modelViewMode === 'detail' && selectedModelOffer ? (
+            <ModelOfferDetail 
+                modelName={selectedModelOffer.model}
+                offerName={selectedModelOffer.offer}
+                records={filteredRecords.filter(r => 
+                    r.modelName === selectedModelOffer.model && 
+                    r.offerName === selectedModelOffer.offer
+                )}
+                onBack={handleBackToModelList}
+                onDealerSelect={handleDealerInOfferSelect}
+            />
+        ) : modelViewMode === 'sales' && selectedModelOffer && selectedDealerForOffer ? (
+            <DealerOfferSales
+                dealerName={selectedDealerForOffer}
+                modelName={selectedModelOffer.model}
+                offerName={selectedModelOffer.offer}
+                records={filteredRecords.filter(r => 
+                    r.modelName === selectedModelOffer.model && 
+                    r.offerName === selectedModelOffer.offer &&
+                    r.dealerName === selectedDealerForOffer
+                )}
+                onBack={handleBackToOfferDetail}
+            />
         ) : (
           <div className="animate-fade-in space-y-8">
             {/* Tab Content Switcher */}
@@ -860,21 +955,31 @@ function App() {
                         <h3 className="text-lg font-bold text-slate-900">Рейтинг дилеров по выручке</h3>
                         <div className="relative w-full md:w-64">
                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
-                            <input type="text" placeholder="Поиск..." className="w-full pl-10 pr-4 py-2 bg-slate-50 rounded-lg text-sm border-none outline-none focus:ring-2 focus:ring-indigo-500 transition-all" />
+                            <input 
+                                type="text" 
+                                placeholder="Поиск..." 
+                                className="w-full pl-10 pr-4 py-2 bg-slate-50 rounded-lg text-sm border-none outline-none focus:ring-2 focus:ring-indigo-500 transition-all" 
+                                value={dashboardSearchQuery}
+                                onChange={(e) => setDashboardSearchQuery(e.target.value)}
+                            />
                         </div>
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-left text-sm text-slate-600">
                             <thead className="bg-slate-50 text-xs uppercase font-semibold text-slate-500">
                                 <tr>
-                                    <th className="px-6 py-4">Дилер</th>
-                                    <th className="px-6 py-4 text-right">Выручка</th>
+                                    <th className="px-6 py-4 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleDashboardSort('name')}>
+                                        Дилер {renderDashboardSortIcon('name')}
+                                    </th>
+                                    <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleDashboardSort('value')}>
+                                        Выручка {renderDashboardSortIcon('value')}
+                                    </th>
                                     <th className="px-6 py-4 text-right">Доля</th>
                                     <th className="px-6 py-4 text-center">Действия</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                                {topDealers.map((dealer, index) => (
+                                {dashboardDealers.map((dealer, index) => (
                                     <tr 
                                       key={index} 
                                       onClick={() => handleDealerClick(dealer.name)}
@@ -884,11 +989,11 @@ function App() {
                                         <td className="px-6 py-4 text-right font-semibold text-indigo-600">{formatCurrency(dealer.value)}</td>
                                         <td className="px-6 py-4 text-right">
                                             <div className="flex items-center justify-end gap-3">
-                                                <span>{((dealer.value / kpi.totalRevenue) * 100).toFixed(1)}%</span>
+                                                <span>{kpi.totalRevenue > 0 ? ((dealer.value / kpi.totalRevenue) * 100).toFixed(1) : 0}%</span>
                                                 <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                                                     <div 
                                                         className="h-full bg-indigo-500 rounded-full" 
-                                                        style={{ width: `${(dealer.value / kpi.totalRevenue) * 100}%` }}
+                                                        style={{ width: `${kpi.totalRevenue > 0 ? (dealer.value / kpi.totalRevenue) * 100 : 0}%` }}
                                                     ></div>
                                                 </div>
                                             </div>
@@ -907,52 +1012,52 @@ function App() {
               </>
             )}
 
-            {activeTab === 'dealers' && (
-              <DealersView records={filteredRecords} onDealerClick={handleDealerClick} />
+            {/* NEW SALES HUB */}
+            {activeTab === 'sales' && (
+              <SalesView 
+                records={filteredRecords}
+                onDealerClick={handleDealerClick}
+                onOfferSelect={handleOfferSelect}
+                onImport={canUpload ? triggerFileUpload : undefined}
+                // Persist State
+                currentSubTab={salesSubTab}
+                onChangeSubTab={setSalesSubTab}
+                crmSearchQuery={salesCrmSearch}
+                onCrmSearchChange={setSalesCrmSearch}
+              />
             )}
 
-            {activeTab === 'models' && (
-               modelViewMode === 'list' ? (
-                 <ModelList 
-                    records={filteredRecords} 
-                    onOfferSelect={handleOfferSelect}
-                 />
-               ) : modelViewMode === 'detail' && selectedModelOffer ? (
-                    <ModelOfferDetail 
-                        modelName={selectedModelOffer.model}
-                        offerName={selectedModelOffer.offer}
-                        records={filteredRecords.filter(r => 
-                            r.modelName === selectedModelOffer.model && 
-                            r.offerName === selectedModelOffer.offer
-                        )}
-                        onBack={handleBackToModelList}
-                        onDealerSelect={handleDealerInOfferSelect}
-                    />
-               ) : modelViewMode === 'sales' && selectedModelOffer && selectedDealerForOffer ? (
-                    <DealerOfferSales
-                        dealerName={selectedDealerForOffer}
-                        modelName={selectedModelOffer.model}
-                        offerName={selectedModelOffer.offer}
-                        records={filteredRecords.filter(r => 
-                            r.modelName === selectedModelOffer.model && 
-                            r.offerName === selectedModelOffer.offer &&
-                            r.dealerName === selectedDealerForOffer
-                        )}
-                        onBack={handleBackToOfferDetail}
-                    />
-               ) : null
+            {activeTab === 'analytics' && currentUser.role !== 'user' && (
+               <AnalyticsView records={filteredRecords} onImport={canUpload ? triggerFileUpload : undefined} />
             )}
 
-            {activeTab === 'analytics' && (
-               <AnalyticsView records={filteredRecords} />
-            )}
-
-            {activeTab === 'comparison' && (
-               <ComparisonView records={recordsFilteredByMetadata} />
+            {activeTab === 'comparison' && currentUser.role !== 'user' && (
+               <ComparisonView records={recordsFilteredByMetadata} onImport={canUpload ? triggerFileUpload : undefined} />
             )}
             
             {activeTab === 'inventory' && (
-               <InventoryView records={filteredInventoryRecords} salesRecords={allRecords} />
+               <InventoryView 
+                  records={filteredInventoryRecords} 
+                  salesRecords={allRecords} 
+                  onImport={canUpload ? triggerFileUpload : undefined}
+                  // Persist State
+                  currentViewMode={inventoryViewMode}
+                  onChangeViewMode={setInventoryViewMode}
+               />
+            )}
+            
+            {activeTab === 'inventory-map' && currentUser.role !== 'user' && (
+               <InventoryMap records={filteredInventoryRecords} salesRecords={allRecords} />
+            )}
+
+            {activeTab === 'recommendations' && currentUser.role !== 'user' && (
+               <RecommendationsView salesRecords={filteredRecords} inventoryRecords={filteredInventoryRecords} />
+            )}
+
+            {/* Removed standalone Map tab logic as it's now inside Sales */}
+            
+            {activeTab === 'users' && currentUser.role === 'admin' && (
+                <UserManagement />
             )}
 
           </div>

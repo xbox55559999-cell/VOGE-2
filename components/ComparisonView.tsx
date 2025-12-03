@@ -1,8 +1,8 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { SaleRecord } from '../types';
-import { formatCurrency, formatNumber } from '../services/dataProcessor';
-import { Calendar, ArrowRight, TrendingUp, TrendingDown, RussianRuble, ShoppingCart, AlertCircle, DollarSign, Box } from 'lucide-react';
+import { formatCurrency, formatNumber, exportToCSV } from '../services/dataProcessor';
+import { Calendar, ArrowRight, TrendingUp, TrendingDown, RussianRuble, ShoppingCart, AlertCircle, DollarSign, Box, FileSpreadsheet, Upload } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   ComposedChart, Line, Area 
@@ -10,9 +10,10 @@ import {
 
 interface ComparisonViewProps {
   records: SaleRecord[];
+  onImport?: () => void;
 }
 
-export const ComparisonView: React.FC<ComparisonViewProps> = ({ records }) => {
+export const ComparisonView: React.FC<ComparisonViewProps> = ({ records, onImport }) => {
   const [period1Start, setPeriod1Start] = useState('');
   const [period1End, setPeriod1End] = useState('');
   const [period2Start, setPeriod2Start] = useState('');
@@ -21,11 +22,53 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ records }) => {
   // State for chart toggle
   const [chartMode, setChartMode] = useState<'money' | 'units'>('money');
 
+  // Initialize default dates based on available data
+  useEffect(() => {
+    if (records.length > 0 && !period1Start) {
+        const dates = records.map(r => r.saleDate.getTime());
+        const maxDate = new Date(Math.max(...dates));
+        const minDate = new Date(Math.min(...dates));
+
+        // Helper: format Date to YYYY-MM-DD
+        const formatDate = (d: Date) => {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        // Period 1: Last 30 days of available data
+        const p1End = maxDate;
+        const p1Start = new Date(maxDate);
+        p1Start.setDate(p1End.getDate() - 30);
+        
+        // Period 2: Previous 30 days
+        const p2End = new Date(p1Start);
+        p2End.setDate(p2End.getDate() - 1);
+        const p2Start = new Date(p2End);
+        p2Start.setDate(p2End.getDate() - 30);
+
+        // Clamp dates to min available date if needed, but allow full ranges for context
+        setPeriod1End(formatDate(p1End));
+        setPeriod1Start(formatDate(p1Start < minDate ? minDate : p1Start));
+        
+        setPeriod2End(formatDate(p2End < minDate ? minDate : p2End));
+        setPeriod2Start(formatDate(p2Start < minDate ? minDate : p2Start));
+    }
+  }, [records]);
+
   const getStats = (start: string, end: string) => {
     if (!start || !end) return { revenue: 0, units: 0, records: [] };
     
-    const startDate = new Date(start);
-    const endDate = new Date(end);
+    // Parse inputs as Local Date (Start of day) to avoid UTC shifts
+    const parseDateLocal = (str: string) => {
+        const [y, m, d] = str.split('-').map(Number);
+        return new Date(y, m - 1, d);
+    };
+
+    const startDate = parseDateLocal(start);
+    const endDate = parseDateLocal(end);
+    // Set end date to end of day
     endDate.setHours(23, 59, 59, 999);
 
     const filtered = records.filter(r => r.saleDate >= startDate && r.saleDate <= endDate);
@@ -78,6 +121,19 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ records }) => {
     }));
   }, [stats1.records, stats2.records]);
 
+  const handleExport = () => {
+    const data = chartData.map(d => ({
+        "Месяц": d.name,
+        "Выручка П1 (руб)": d.p1_revenue,
+        "Выручка П2 (руб)": d.p2_revenue,
+        "Разница Выручки (руб)": d.p2_revenue - d.p1_revenue,
+        "Продажи П1 (шт)": d.p1_units,
+        "Продажи П2 (шт)": d.p2_units,
+        "Разница Продаж (шт)": d.p2_units - d.p1_units
+    }));
+    exportToCSV(data, 'comparison_report');
+  };
+
   const renderDeltaBadge = (percent: number) => {
     if (percent === 0) return <span className="text-slate-400 text-sm font-medium">0%</span>;
     const isPositive = percent > 0;
@@ -93,9 +149,29 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ records }) => {
 
   return (
     <div className="animate-fade-in space-y-8">
-      <div>
-        <h2 className="text-3xl font-bold text-slate-900">Сравнение периодов</h2>
-        <p className="text-slate-500 mt-1">Анализ изменений показателей между двумя временными отрезками</p>
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+            <h2 className="text-3xl font-bold text-slate-900">Сравнение периодов</h2>
+            <p className="text-slate-500 mt-1">Анализ изменений показателей между двумя временными отрезками</p>
+        </div>
+        <div className="flex gap-2">
+            {onImport && (
+                <button 
+                    onClick={onImport}
+                    className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+                >
+                    <Upload className="w-4 h-4 text-indigo-600" />
+                    Импорт из CSV
+                </button>
+            )}
+            <button 
+                onClick={handleExport}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+            >
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                Экспорт в CSV
+            </button>
+        </div>
       </div>
 
       {/* Date Pickers */}

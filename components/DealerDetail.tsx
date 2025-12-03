@@ -261,7 +261,7 @@ export const DealerDetail: React.FC<DealerDetailProps> = ({ dealerName, records,
                      <th className="px-6 py-4 w-10"></th>
                      <th className="px-6 py-4">Модель / Комплектация / VIN</th>
                      <th className="px-6 py-4 text-right">Количество</th>
-                     <th className="px-6 py-4 text-right">Цена продажи</th>
+                     <th className="px-6 py-4 text-right">Выручка</th>
                   </tr>
                </thead>
                <tbody className="divide-y divide-slate-100">

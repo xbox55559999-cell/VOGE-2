@@ -1,16 +1,18 @@
+
 import React, { useMemo, useState } from 'react';
 import { SaleRecord } from '../types';
-import { formatCurrency, formatNumber } from '../services/dataProcessor';
-import { ChevronRight, ArrowUpDown, TrendingUp } from 'lucide-react';
+import { formatCurrency, formatNumber, exportToCSV } from '../services/dataProcessor';
+import { ChevronRight, ArrowUpDown, TrendingUp, FileSpreadsheet, Upload, MapPin } from 'lucide-react';
 
 interface DealersViewProps {
   records: SaleRecord[];
   onDealerClick: (dealerName: string) => void;
+  onImport?: () => void;
 }
 
-type SortField = 'name' | 'units' | 'revenue' | 'margin' | 'avgTicket' | 'share';
+type SortField = 'name' | 'city' | 'units' | 'revenue' | 'margin' | 'avgTicket' | 'share';
 
-export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick }) => {
+export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick, onImport }) => {
   const [sortField, setSortField] = useState<SortField>('revenue');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
@@ -19,15 +21,17 @@ export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick
   const dealersStats = useMemo(() => {
     const map = new Map<string, { 
       name: string; 
+      city: string;
       units: number; 
       revenue: number; 
       margin: number; 
     }>();
 
     records.forEach(r => {
-      const current = map.get(r.dealerName) || { name: r.dealerName, units: 0, revenue: 0, margin: 0 };
+      const current = map.get(r.dealerName) || { name: r.dealerName, city: r.city, units: 0, revenue: 0, margin: 0 };
       map.set(r.dealerName, {
         name: r.dealerName,
+        city: r.city,
         units: current.units + 1,
         revenue: current.revenue + r.soldPrice,
         margin: current.margin + r.margin
@@ -45,6 +49,7 @@ export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick
     return [...dealersStats].sort((a, b) => {
       const factor = sortDirection === 'asc' ? 1 : -1;
       if (sortField === 'name') return a.name.localeCompare(b.name) * factor;
+      if (sortField === 'city') return a.city.localeCompare(b.city) * factor;
       return (a[sortField] - b[sortField]) * factor;
     });
   }, [dealersStats, sortField, sortDirection]);
@@ -56,6 +61,20 @@ export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick
       setSortField(field);
       setSortDirection('desc');
     }
+  };
+
+  const handleExport = () => {
+    const dataToExport = sortedDealers.map(d => ({
+        "Дилер": d.name,
+        "Город": d.city,
+        "Продажи (шт)": d.units,
+        "Выручка (руб)": d.revenue,
+        "Маржа (руб)": d.margin,
+        "Рентабельность (%)": d.revenue > 0 ? ((d.margin / d.revenue) * 100).toFixed(2) : 0,
+        "Средний чек (руб)": d.avgTicket,
+        "Доля рынка (%)": d.share.toFixed(2)
+    }));
+    exportToCSV(dataToExport, 'dealers_report');
   };
 
   const renderSortIcon = (field: SortField) => {
@@ -78,6 +97,24 @@ export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick
           <h2 className="text-3xl font-bold text-slate-900">Дилерская сеть</h2>
           <p className="text-slate-500 mt-1">Рейтинг эффективности партнеров ({sortedDealers.length})</p>
         </div>
+        <div className="flex gap-2">
+            {onImport && (
+                <button 
+                    onClick={onImport}
+                    className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+                >
+                    <Upload className="w-4 h-4 text-indigo-600" />
+                    Импорт из CSV
+                </button>
+            )}
+            <button 
+                onClick={handleExport}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+            >
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                Экспорт в CSV
+            </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
@@ -87,6 +124,9 @@ export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick
               <tr>
                 <th className="px-6 py-4 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('name')}>
                   Дилер {renderSortIcon('name')}
+                </th>
+                <th className="px-6 py-4 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('city')}>
+                  Город {renderSortIcon('city')}
                 </th>
                 <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('units')}>
                   Продажи (шт) {renderSortIcon('units')}
@@ -121,6 +161,12 @@ export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick
                         {index + 1}
                       </div>
                       {dealer.name}
+                    </td>
+                    <td className="px-6 py-4 text-slate-500">
+                      <div className="flex items-center gap-1.5">
+                        <MapPin className="w-3 h-3 text-slate-400" />
+                        {dealer.city}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-right font-medium">
                       {formatNumber(dealer.units)}
@@ -160,7 +206,7 @@ export const DealersView: React.FC<DealersViewProps> = ({ records, onDealerClick
               })}
               {sortedDealers.length === 0 && (
                  <tr>
-                   <td colSpan={7} className="px-6 py-12 text-center text-slate-400">
+                   <td colSpan={8} className="px-6 py-12 text-center text-slate-400">
                      Нет данных, удовлетворяющих условиям фильтра
                    </td>
                  </tr>

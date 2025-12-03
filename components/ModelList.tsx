@@ -1,15 +1,16 @@
 
 import React, { useMemo, useState } from 'react';
 import { SaleRecord } from '../types';
-import { formatCurrency, formatNumber } from '../services/dataProcessor';
-import { Trophy, TrendingUp, Package, ChevronDown, ChevronRight, Tag, ArrowRight } from 'lucide-react';
+import { formatCurrency, formatNumber, exportToCSV } from '../services/dataProcessor';
+import { Trophy, TrendingUp, Package, ChevronDown, ChevronRight, Tag, ArrowRight, FileSpreadsheet, Upload, Layers } from 'lucide-react';
 
 interface ModelListProps {
     records: SaleRecord[];
     onOfferSelect: (modelName: string, offerName: string) => void;
+    onImport?: () => void;
 }
 
-export const ModelList: React.FC<ModelListProps> = ({ records, onOfferSelect }) => {
+export const ModelList: React.FC<ModelListProps> = ({ records, onOfferSelect, onImport }) => {
     const [expandedModel, setExpandedModel] = useState<string | null>(null);
 
     // Aggregate data by Model
@@ -54,12 +55,41 @@ export const ModelList: React.FC<ModelListProps> = ({ records, onOfferSelect }) 
         setExpandedModel(prev => prev === modelName ? null : modelName);
     };
 
+    const handleExport = () => {
+        const dataToExport = modelStats.map(m => ({
+            "Модель": m.name,
+            "Продажи (шт)": m.units,
+            "Выручка (руб)": m.revenue,
+            "Средняя цена (руб)": m.avgPrice,
+            "Доля выручки (%)": totalRevenue > 0 ? ((m.revenue / totalRevenue) * 100).toFixed(2) : 0
+        }));
+        exportToCSV(dataToExport, 'models_sales_report');
+    };
+
     return (
         <div className="animate-fade-in space-y-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <h2 className="text-3xl font-bold text-slate-900">Модельный ряд</h2>
                     <p className="text-slate-500 mt-1">Статистика продаж в разрезе моделей и комплектаций</p>
+                </div>
+                <div className="flex gap-2">
+                    {onImport && (
+                        <button 
+                            onClick={onImport}
+                            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+                        >
+                            <Upload className="w-4 h-4 text-indigo-600" />
+                            Импорт из CSV
+                        </button>
+                    )}
+                    <button 
+                        onClick={handleExport}
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+                    >
+                        <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                        Экспорт в CSV
+                    </button>
                 </div>
             </div>
 
@@ -127,7 +157,7 @@ export const ModelList: React.FC<ModelListProps> = ({ records, onOfferSelect }) 
                                             <td className="px-6 py-4 text-center">
                                                 {isExpanded ? <ChevronDown className="w-4 h-4 text-indigo-600" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
                                             </td>
-                                            <td className="px-6 py-4 font-medium text-slate-900">
+                                            <td className="px-6 py-4 font-bold text-slate-900">
                                                 {model.name}
                                             </td>
                                             <td className="px-6 py-4 text-right font-medium">
@@ -136,7 +166,7 @@ export const ModelList: React.FC<ModelListProps> = ({ records, onOfferSelect }) 
                                             <td className="px-6 py-4 text-right text-slate-500">
                                                 {formatCurrency(model.avgPrice)}
                                             </td>
-                                            <td className="px-6 py-4 text-right font-semibold text-emerald-600">
+                                            <td className="px-6 py-4 text-right font-bold text-emerald-600">
                                                 {formatCurrency(model.revenue)}
                                             </td>
                                             <td className="px-6 py-4">
@@ -155,20 +185,20 @@ export const ModelList: React.FC<ModelListProps> = ({ records, onOfferSelect }) 
                                         {isExpanded && (
                                             <tr>
                                                 <td colSpan={6} className="p-0">
-                                                    <div className="bg-slate-50 px-12 py-6 border-y border-slate-100 shadow-inner">
-                                                        <h4 className="text-xs font-bold uppercase text-slate-500 mb-4 flex items-center gap-2">
-                                                            <Tag className="w-4 h-4" />
-                                                            Комплектации модели {model.name}
+                                                    <div className="bg-slate-50/50 px-4 md:px-12 py-6 border-y border-slate-100 shadow-inner">
+                                                        <h4 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-4 flex items-center gap-2 pl-1">
+                                                            <Layers className="w-4 h-4 text-indigo-500" />
+                                                            Комплектации: {model.name}
                                                         </h4>
-                                                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                                                            <table className="w-full">
-                                                                <thead className="bg-slate-50 text-xs font-medium text-slate-500">
+                                                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                                                            <table className="w-full text-left text-sm text-slate-600">
+                                                                <thead className="bg-slate-50 border-b border-slate-100 text-xs uppercase font-semibold text-slate-500">
                                                                     <tr>
                                                                         <th className="px-6 py-3 text-left">Комплектация</th>
                                                                         <th className="px-6 py-3 text-right">Продано</th>
                                                                         <th className="px-6 py-3 text-right">Ср. цена</th>
                                                                         <th className="px-6 py-3 text-right">Выручка</th>
-                                                                        <th className="px-6 py-3 text-center">Действие</th>
+                                                                        <th className="px-6 py-3 text-center">Детализация</th>
                                                                     </tr>
                                                                 </thead>
                                                                 <tbody className="divide-y divide-slate-100">
@@ -178,12 +208,15 @@ export const ModelList: React.FC<ModelListProps> = ({ records, onOfferSelect }) 
                                                                             onClick={() => onOfferSelect(model.name, offer.name)}
                                                                             className="hover:bg-indigo-50/50 transition-colors cursor-pointer group"
                                                                         >
-                                                                            <td className="px-6 py-3 font-medium text-slate-700">{offer.name}</td>
-                                                                            <td className="px-6 py-3 text-right">{formatNumber(offer.units)}</td>
+                                                                            <td className="px-6 py-3 font-medium text-slate-900 flex items-center gap-2">
+                                                                                <Tag className="w-4 h-4 text-slate-400 group-hover:text-indigo-500 transition-colors" />
+                                                                                {offer.name}
+                                                                            </td>
+                                                                            <td className="px-6 py-3 text-right text-slate-600">{formatNumber(offer.units)} шт.</td>
                                                                             <td className="px-6 py-3 text-right text-slate-500">{formatCurrency(offer.avgPrice)}</td>
-                                                                            <td className="px-6 py-3 text-right font-medium text-indigo-600">{formatCurrency(offer.revenue)}</td>
+                                                                            <td className="px-6 py-3 text-right font-semibold text-indigo-600">{formatCurrency(offer.revenue)}</td>
                                                                             <td className="px-6 py-3 text-center">
-                                                                                <button className="text-xs bg-white border border-slate-200 px-3 py-1 rounded-full text-slate-600 group-hover:border-indigo-200 group-hover:text-indigo-600 flex items-center gap-1 mx-auto transition-all">
+                                                                                <button className="text-xs bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 group-hover:border-indigo-200 group-hover:text-indigo-600 flex items-center gap-1.5 mx-auto transition-all shadow-sm font-medium">
                                                                                     Дилеры <ArrowRight className="w-3 h-3" />
                                                                                 </button>
                                                                             </td>

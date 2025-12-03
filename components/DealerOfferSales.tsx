@@ -111,7 +111,7 @@ export const DealerOfferSales: React.FC<DealerOfferSalesProps> = ({
                         </th>
                         <th className="px-6 py-4">VIN</th>
                         <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('soldPrice')}>
-                            Цена продажи {renderSortIcon('soldPrice')}
+                            Выручка {renderSortIcon('soldPrice')}
                         </th>
                         <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('margin')}>
                             Маржа {renderSortIcon('margin')}

@@ -1,18 +1,19 @@
 
 import React, { useMemo } from 'react';
 import { SaleRecord } from '../types';
-import { formatCurrency, formatNumber } from '../services/dataProcessor';
+import { formatCurrency, formatNumber, exportToCSV } from '../services/dataProcessor';
 import { 
   ComposedChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   ScatterChart, Scatter, ZAxis, AreaChart, Area
 } from 'recharts';
-import { TrendingUp, Calendar, Activity, BarChart2 } from 'lucide-react';
+import { TrendingUp, Calendar, Activity, BarChart2, FileSpreadsheet, Upload } from 'lucide-react';
 
 interface AnalyticsViewProps {
   records: SaleRecord[];
+  onImport?: () => void;
 }
 
-export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ records }) => {
+export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ records, onImport }) => {
   
   // 1. Revenue vs Margin Over Time
   const trendData = useMemo(() => {
@@ -84,12 +85,40 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ records }) => {
 
   }, [records, trendData]);
 
+  const handleExport = () => {
+    const data = trendData.map(d => ({
+        "Месяц": d.name,
+        "Выручка (руб)": d.revenue,
+        "Маржа (руб)": d.margin,
+        "Продажи (шт)": d.units
+    }));
+    exportToCSV(data, 'analytics_trends_report');
+  };
+
   return (
     <div className="animate-fade-in space-y-8">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
                 <h2 className="text-3xl font-bold text-slate-900">Глубокая аналитика</h2>
                 <p className="text-slate-500 mt-1">Тренды, корреляции и финансовые показатели</p>
+            </div>
+            <div className="flex gap-2">
+                {onImport && (
+                    <button 
+                        onClick={onImport}
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+                    >
+                        <Upload className="w-4 h-4 text-indigo-600" />
+                        Импорт из CSV
+                    </button>
+                )}
+                <button 
+                    onClick={handleExport}
+                    className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+                >
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                    Экспорт в CSV
+                </button>
             </div>
         </div>
 
