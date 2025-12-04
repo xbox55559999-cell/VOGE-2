@@ -154,13 +154,8 @@ function App() {
               } catch (e) {
                   console.error("Polling error", e);
               }
-          } else {
-              // Simulation fallback if not connected
-              if (Math.random() > 0.8) { // Slower simulation frequency
-                  await messengerService.simulateIncomingMessage();
-                  updateUnreadCount();
-              }
           }
+          // Removed simulation fallback to prevent demo bots
       }, 5000); // Check every 5 sec
 
       const checkAndRunSync = async () => {

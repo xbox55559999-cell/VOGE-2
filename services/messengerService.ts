@@ -1,6 +1,7 @@
 
 import { ChatSession, ChatMessage } from '../types';
 import { loadFromDB, saveToDB } from './storage';
+import { sendTelegramMessage } from './telegramIntegration';
 
 const CHATS_KEY = 'MESSENGER_CHATS';
 const MESSAGES_KEY = 'MESSENGER_MESSAGES';
@@ -40,15 +41,33 @@ export const messengerService = {
             isRead: true
         };
 
+        // 1. Save to Local DB (Optimistic Update)
         const updatedMessages = [...allMessages, newMessage];
         await saveToDB(MESSAGES_KEY, updatedMessages);
 
-        // Update Chat Session
+        // Update Chat Session in Local DB
         const chatIndex = chats.findIndex((c: ChatSession) => c.id === chatId);
-        if (chatIndex >= 0) {
-            chats[chatIndex].lastMessageText = text;
-            chats[chatIndex].lastMessageTime = Date.now();
+        const targetChat = chatIndex >= 0 ? chats[chatIndex] : null;
+
+        if (targetChat) {
+            targetChat.lastMessageText = text;
+            targetChat.lastMessageTime = Date.now();
             await saveToDB(CHATS_KEY, chats);
+        }
+
+        // 2. Send to Real Telegram API
+        if (targetChat && targetChat.platform === 'telegram') {
+            try {
+                const tgSettings = await loadFromDB('TELEGRAM_SETTINGS');
+                if (tgSettings && tgSettings.isConnected && tgSettings.botToken) {
+                    await sendTelegramMessage(tgSettings.botToken, chatId, text);
+                } else {
+                    console.warn('Telegram token not found or not connected');
+                }
+            } catch (e) {
+                console.error('Failed to send Telegram message:', e);
+                // Optional: Update message status to error in DB (omitted for simplicity)
+            }
         }
 
         return newMessage;
@@ -77,6 +96,18 @@ export const messengerService = {
         }
     },
 
+    deleteChat: async (chatId: string) => {
+        // Delete chat session
+        const chats = (await loadFromDB(CHATS_KEY)) || [];
+        const updatedChats = chats.filter((c: ChatSession) => c.id !== chatId);
+        await saveToDB(CHATS_KEY, updatedChats);
+
+        // Delete all messages associated with chat
+        const allMessages = (await loadFromDB(MESSAGES_KEY)) || [];
+        const updatedMessages = allMessages.filter((m: ChatMessage) => m.chatId !== chatId);
+        await saveToDB(MESSAGES_KEY, updatedMessages);
+    },
+
     editMessage: async (messageId: string, newText: string) => {
         const allMessages = (await loadFromDB(MESSAGES_KEY)) || [];
         const msgIndex = allMessages.findIndex((m: ChatMessage) => m.id === messageId);
@@ -86,14 +117,11 @@ export const messengerService = {
             allMessages[msgIndex].isEdited = true;
             await saveToDB(MESSAGES_KEY, allMessages);
             
-            // Note: We might need to update the chat session if this was the last message, 
-            // but for simplicity assuming UI refresh handles it via getChats sorting mostly by time. 
-            // Correct implementation would check if it's the last message and update chat preview text.
+            // Update chat session if this was the last message
             const chatId = allMessages[msgIndex].chatId;
             const chats = (await loadFromDB(CHATS_KEY)) || [];
             const chatIndex = chats.findIndex((c: ChatSession) => c.id === chatId);
             
-            // Simple check: is this roughly the last message?
             if (chatIndex >= 0 && chats[chatIndex].lastMessageTime === allMessages[msgIndex].timestamp) {
                  chats[chatIndex].lastMessageText = newText;
                  await saveToDB(CHATS_KEY, chats);
@@ -186,70 +214,9 @@ export const messengerService = {
 
     getLastUpdateId: () => lastUpdateId,
 
-    // Mocking an incoming message for demo purposes (Fallback)
+    // Mocking disabled to prevent fake bots
     simulateIncomingMessage: async () => {
-        const chats = (await loadFromDB(CHATS_KEY)) || [];
-        const allMessages = (await loadFromDB(MESSAGES_KEY)) || [];
-
-        // Always create new chat if empty to show functionality in demo
-        // Or pick random existing
-        let chatId;
-        let chatName;
-
-        if (chats.length === 0 || Math.random() > 0.7) {
-            chatId = Date.now().toString();
-            chatName = `Клиент ${Math.floor(Math.random() * 1000)}`;
-            chats.unshift({
-                id: chatId,
-                platform: 'telegram',
-                contactName: chatName,
-                contactPhone: `@user${Math.floor(Math.random() * 1000)}`,
-                lastMessageText: '',
-                lastMessageTime: Date.now(),
-                unreadCount: 0,
-                avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${chatId}`
-            });
-        } else {
-            const target = chats[0];
-            chatId = target.id;
-            chatName = target.contactName;
-        }
-
-        const phrases = [
-            "Подскажите цену на SR4 Max?",
-            "Есть ли в наличии черный цвет?",
-            "Можно ли оформить кредит?",
-            "Где находится ваш салон?",
-            "Спасибо, жду информацию."
-        ];
-        const text = phrases[Math.floor(Math.random() * phrases.length)];
-
-        const newMessage: ChatMessage = {
-            id: Date.now().toString(),
-            chatId,
-            text,
-            isOutbound: false,
-            timestamp: Date.now(),
-            isRead: false
-        };
-
-        // Update Messages
-        const updatedMessages = [...allMessages, newMessage];
-        await saveToDB(MESSAGES_KEY, updatedMessages);
-
-        // Update Chat Session
-        const chatIndex = chats.findIndex((c: ChatSession) => c.id === chatId);
-        if (chatIndex >= 0) {
-            chats[chatIndex].lastMessageText = text;
-            chats[chatIndex].lastMessageTime = Date.now();
-            chats[chatIndex].unreadCount += 1;
-            // Move to top
-            const chat = chats.splice(chatIndex, 1)[0];
-            chats.unshift(chat);
-            await saveToDB(CHATS_KEY, chats);
-        }
-
-        return { chatName, text, chatId };
+        return; // Disabled
     },
 
     getTotalUnread: async () => {
